@@ -487,6 +487,10 @@ erpnext.TransactionController = erpnext.taxes_and_totals.extend({
 		var me = this;
 		var item = frappe.get_doc(cdt, cdn);
 		var update_stock = 0, show_batch_dialog = 0;
+
+		item.weight_per_unit = 0;
+		item.weight_uom = '';
+
 		if(['Sales Invoice'].includes(this.frm.doc.doctype)) {
 			update_stock = cint(me.frm.doc.update_stock);
 			show_batch_dialog = update_stock;
@@ -613,6 +617,7 @@ erpnext.TransactionController = erpnext.taxes_and_totals.extend({
 											me.frm.script_manager.trigger('qty', item.doctype, item.name);
 											if (!me.frm.doc.set_warehouse)
 												me.frm.script_manager.trigger('warehouse', item.doctype, item.name);
+											me.apply_price_list(item, true);
 										}, undefined, !frappe.flags.hide_serial_batch_dialog);
 									}
 								},
@@ -860,7 +865,9 @@ erpnext.TransactionController = erpnext.taxes_and_totals.extend({
 						if (r.message) {
 							me.frm.set_value("billing_address", r.message);
 						} else {
-							me.frm.set_value("company_address", "");
+							if (frappe.meta.get_docfield(me.frm.doctype, 'company_address')) {
+								me.frm.set_value("company_address", "");
+							}
 						}
 					}
 				});
