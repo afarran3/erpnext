@@ -194,12 +194,12 @@ class PayrollEntry(Document):
 		salary_slips = self.get_sal_slip_list(ss_status = 1, as_dict = True)
 		if salary_slips:
 			salary_components = frappe.db.sql("""
-				select ssd.salary_component, ssd.amount, ssd.parentfield, ss.payroll_cost_center
+				select ssd.salary_component, ssd.amount, ssd.parentfield, ss.payroll_cost_center, ss.employee
 				from `tabSalary Slip` ss, `tabSalary Detail` ssd
 				where ss.name = ssd.parent and ssd.parentfield = '%s' and ss.name in (%s)
 			""" % (component_type, ', '.join(['%s']*len(salary_slips))),
 				tuple([d.name for d in salary_slips]), as_dict=True)
-
+			print("=== ", salary_components)
 			return salary_components
 
 	def get_salary_component_total(self, component_type = None):
@@ -207,22 +207,24 @@ class PayrollEntry(Document):
 		if salary_components:
 			component_dict = {}
 			for item in salary_components:
+				print("#### ", item.employee)
 				add_component_to_accrual_jv_entry = True
 				if component_type == "earnings":
 					is_flexible_benefit, only_tax_impact = frappe.db.get_value("Salary Component", item['salary_component'], ['is_flexible_benefit', 'only_tax_impact'])
 					if is_flexible_benefit == 1 and only_tax_impact ==1:
 						add_component_to_accrual_jv_entry = False
 				if add_component_to_accrual_jv_entry:
-					component_dict[(item.salary_component, item.payroll_cost_center)] \
-						= component_dict.get((item.salary_component, item.payroll_cost_center), 0) + flt(item.amount)
+					component_dict[(item.salary_component, item.payroll_cost_center, item.employee)] \
+						= component_dict.get((item.salary_component, item.payroll_cost_center, item.employee), 0) + flt(item.amount)
 			account_details = self.get_account(component_dict = component_dict)
+			print("++=+=++ ", account_details)
 			return account_details
 
 	def get_account(self, component_dict = None):
 		account_dict = {}
 		for key, amount in component_dict.items():
 			account = self.get_salary_component_account(key[0])
-			account_dict[(account, key[1])] = account_dict.get((account, key[1]), 0) + amount
+			account_dict[(account, key[1], key[2])] = account_dict.get((account, key[1], key[2]), 0) + amount
 		return account_dict
 
 	def make_accrual_jv_entry(self):
@@ -247,39 +249,85 @@ class PayrollEntry(Document):
 			payable_amount = 0
 			multi_currency = 0
 			company_currency = erpnext.get_company_currency(self.company)
+			employee = ""
 
+			print("++==++ ", earnings.items())
 			# Earnings
 			for acc_cc, amount in earnings.items():
 				exchange_rate, amt = self.get_amount_and_exchange_rate_for_journal_entry(acc_cc[0], amount, company_currency, currencies)
 				payable_amount += flt(amount, precision)
-				accounts.append(self.update_accounting_dimensions({
-					"account": acc_cc[0],
-					"debit_in_account_currency": flt(amt, precision),
-					"exchange_rate": flt(exchange_rate),
-					"cost_center": acc_cc[1] or self.cost_center,
-					"project": self.project
-				}, accounting_dimensions))
+				account_type = frappe.db.get_value("Account", acc_cc[0], "account_type")
+				if account_type in ["Receivable", "Payable"]:
+					row = {
+						"account": acc_cc[0],
+						"debit_in_account_currency": flt(amt, precision),
+						"exchange_rate": flt(exchange_rate),
+						"cost_center": acc_cc[1] or self.cost_center,
+						"project": self.project,
+						"party_type": "Employee",
+						"party": acc_cc[2]
+					}
+					employee = acc_cc[2]
+				else:
+					row = {
+						"account": acc_cc[0],
+						"debit_in_account_currency": flt(amt, precision),
+						"exchange_rate": flt(exchange_rate),
+						"cost_center": acc_cc[1] or self.cost_center,
+						"project": self.project
+					}
+
+				accounts.append(self.update_accounting_dimensions(row, accounting_dimensions))
 
 			# Deductions
 			for acc_cc, amount in deductions.items():
 				exchange_rate, amt = self.get_amount_and_exchange_rate_for_journal_entry(acc_cc[0], amount, company_currency, currencies)
 				payable_amount -= flt(amount, precision)
-				accounts.append(self.update_accounting_dimensions({
-					"account": acc_cc[0],
-					"credit_in_account_currency": flt(amt, precision),
-					"exchange_rate": flt(exchange_rate),
-					"cost_center": acc_cc[1] or self.cost_center,
-					"project": self.project
-				}, accounting_dimensions))
+				account_type = frappe.db.get_value("Account", acc_cc[0], "account_type")
+				if account_type in ["Receivable", "Payable"]:
+					row = {
+						"account": acc_cc[0],
+						"credit_in_account_currency": flt(amt, precision),
+						"exchange_rate": flt(exchange_rate),
+						"cost_center": acc_cc[1] or self.cost_center,
+						"project": self.project,
+						"party_type": "Employee",
+						"party": acc_cc[2]
+					}
+					employee = acc_cc[2]
+				else:
+					row = {
+						"account": acc_cc[0],
+						"credit_in_account_currency": flt(amt, precision),
+						"exchange_rate": flt(exchange_rate),
+						"cost_center": acc_cc[1] or self.cost_center,
+						"project": self.project
+					}
+
+				accounts.append(self.update_accounting_dimensions(row, accounting_dimensions))
 
 			# Payable amount
 			exchange_rate, payable_amt = self.get_amount_and_exchange_rate_for_journal_entry(payroll_payable_account, payable_amount, company_currency, currencies)
-			accounts.append(self.update_accounting_dimensions({
-				"account": payroll_payable_account,
-				"credit_in_account_currency": flt(payable_amt, precision),
-				"exchange_rate": flt(exchange_rate),
-				"cost_center": self.cost_center
-			}, accounting_dimensions))
+			account_type = frappe.db.get_value("Account", payroll_payable_account, "account_type")
+			if account_type in ["Receivable", "Payable"]:
+				row = {
+					"account": payroll_payable_account,
+					"credit_in_account_currency": flt(payable_amt, precision),
+					"exchange_rate": flt(exchange_rate),
+					"cost_center": self.cost_center,
+					"party_type": "Employee",
+					"party": employee
+				}
+				employee = ""
+			else:
+				row = {
+					"account": payroll_payable_account,
+					"credit_in_account_currency": flt(payable_amt, precision),
+					"exchange_rate": flt(exchange_rate),
+					"cost_center": self.cost_center
+				}
+
+			accounts.append(self.update_accounting_dimensions(row, accounting_dimensions))
 
 			journal_entry.set("accounts", accounts)
 			if len(currencies) > 1:
@@ -452,6 +500,7 @@ def get_sal_struct(company, currency, salary_slip_based_on_timesheet, condition)
 def get_filter_condition(filters):
 	cond = ''
 	for f in ['company', 'branch', 'department', 'designation']:
+		print("==== ", filters.get(f))
 		if filters.get(f):
 			cond += " and t1." + f + " = " + frappe.db.escape(filters.get(f))
 
